@@ -1152,6 +1152,87 @@ function extrairLinksBing(htmlBusca, links) {
   }
 }
 
+function montarDrinkCocktailDb(item) {
+  if (!item?.strDrink) return null;
+
+  const ingredientes = [];
+  const medidas = [];
+
+  for (let indice = 1; indice <= 15; indice += 1) {
+    const ingrediente = limparTextoWeb(item[`strIngredient${indice}`]);
+    const medida = limparTextoWeb(item[`strMeasure${indice}`]);
+
+    if (!ingrediente) continue;
+
+    ingredientes.push(ingrediente);
+    medidas.push([medida, ingrediente].filter(Boolean).join(" "));
+  }
+
+  const instrucoes = [
+    limparTextoWeb(item.strInstructionsPT || item.strInstructions || "Preparo nao informado."),
+    medidas.length > 0 ? `Medidas originais: ${medidas.join("; ")}` : "",
+    item.strGlass ? `Copo: ${limparTextoWeb(item.strGlass)}` : "",
+    item.strCategory ? `Categoria original: ${limparTextoWeb(item.strCategory)}` : "",
+  ].filter(Boolean).join("\n\n");
+
+  return {
+    nome: limparTextoWeb(item.strDrink),
+    ingredientes,
+    instrucoes,
+    pessoas: 1,
+    imagemUrl: item.strDrinkThumb || "",
+    fonte: `https://www.thecocktaildb.com/drink/${item.idDrink}`,
+  };
+}
+
+async function pesquisarDrinksCocktailDb(busca, ingredientes) {
+  const termo = limparTextoWeb(ingredientes || busca);
+  const resultados = [];
+
+  if (!termo) return resultados;
+
+  const urls = [
+    `https://www.thecocktaildb.com/api/json/v1/1/search.php?s=${encodeURIComponent(termo)}`,
+    `https://www.thecocktaildb.com/api/json/v1/1/filter.php?i=${encodeURIComponent(termo)}`,
+  ];
+
+  for (const apiUrl of urls) {
+    try {
+      const resposta = await fetch(apiUrl, {
+        headers: { "User-Agent": "Mozilla/5.0 (compatible; DrinksBot/1.0)" },
+      });
+
+      if (!resposta.ok) continue;
+
+      const dados = await resposta.json();
+      const drinks = Array.isArray(dados.drinks) ? dados.drinks : [];
+
+      for (const drink of drinks.slice(0, 12)) {
+        let detalhe = drink;
+
+        if (!drink.strInstructions && drink.idDrink) {
+          const detalheResposta = await fetch(`https://www.thecocktaildb.com/api/json/v1/1/lookup.php?i=${encodeURIComponent(drink.idDrink)}`, {
+            headers: { "User-Agent": "Mozilla/5.0 (compatible; DrinksBot/1.0)" },
+          });
+          const detalheDados = detalheResposta.ok ? await detalheResposta.json() : null;
+          detalhe = Array.isArray(detalheDados?.drinks) ? detalheDados.drinks[0] : drink;
+        }
+
+        const convertido = montarDrinkCocktailDb(detalhe);
+        if (convertido && !resultados.some((item) => item.nome.toLowerCase() === convertido.nome.toLowerCase())) {
+          resultados.push(convertido);
+        }
+      }
+    } catch {
+      // Ignora indisponibilidade da fonte externa.
+    }
+
+    if (resultados.length >= 12) break;
+  }
+
+  return resultados;
+}
+
 async function pesquisarReceitasInternet(res, url) {
   const busca = (url.searchParams.get("busca") || "").trim();
   const ingredientes = (url.searchParams.get("ingredientes") || "").trim();
@@ -1164,6 +1245,11 @@ async function pesquisarReceitasInternet(res, url) {
 
   const consulta = partes.join(" ");
   const links = [];
+  const receitas = [];
+
+  for (const drink of await pesquisarDrinksCocktailDb(busca, ingredientes)) {
+    receitas.push(drink);
+  }
 
   try {
     const htmlDuckDuckGo = await baixarTexto(`https://duckduckgo.com/html/?q=${encodeURIComponent(consulta)}`);
@@ -1181,7 +1267,6 @@ async function pesquisarReceitasInternet(res, url) {
     }
   }
 
-  const receitas = [];
   for (const link of links) {
     try {
       const html = await baixarTexto(link);
