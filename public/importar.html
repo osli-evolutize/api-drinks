@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Importar drinks</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body class="form-page">
+    <main class="form-shell">
+      <header class="form-header">
+        <a class="back-link" href="./">Voltar</a>
+        <div>
+          <p class="category-line">Internet</p>
+          <h1>Importar drinks</h1>
+        </div>
+      </header>
+
+      <form class="recipe-form" id="formImportar">
+        <section class="form-section">
+          <h2>Busca</h2>
+          <div class="form-grid">
+            <label>
+              Drink
+              <input name="busca" placeholder="Ex.: caipirinha, mojito">
+            </label>
+            <label>
+              Categoria para gravar
+              <input name="categoria" maxlength="40" value="Drinks do Barman" required>
+            </label>
+            <label>
+              Ingredientes
+              <input name="ingredientes" placeholder="Ex.: vodka, limao, hortela">
+            </label>
+            <label>
+              Identificacao para gravar
+              <input name="origem" value="Barman" placeholder="Ex.: Barman">
+            </label>
+          </div>
+          <p class="field-hint">A pesquisa usa drink e ingredientes. A categoria e a identificacao servem para organizar o que for importado.</p>
+          <button type="submit" class="primary-button">Buscar drinks</button>
+          <p id="mensagemImportacao" aria-live="polite"></p>
+        </section>
+
+        <section class="form-section">
+          <h2>Resultados</h2>
+          <div class="web-results" id="resultadosInternet"></div>
+        </section>
+      </form>
+    </main>
+
+    <script src="importar.js"></script>
+  </body>
+</html>

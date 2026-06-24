@@ -1,0 +1,399 @@
+const estadoCadastro = {
+  categorias: [],
+  unidades: [],
+  ingredientes: [],
+  ingredientesPorNome: new Map(),
+  timersMedidas: new WeakMap(),
+  modoEdicao: false,
+  nomeOriginal: "",
+};
+
+const form = document.querySelector("#formReceita");
+const categoriaSelect = document.querySelector("#categoriaCodigo");
+const ingredientesEditor = document.querySelector("#ingredientesEditor");
+const templateIngrediente = document.querySelector("#templateIngrediente");
+const listaIngredientes = document.querySelector("#listaIngredientes");
+const btnAdicionarIngrediente = document.querySelector("#btnAdicionarIngrediente");
+const btnNovoIngrediente = document.querySelector("#btnNovoIngrediente");
+const btnFecharIngrediente = document.querySelector("#btnFecharIngrediente");
+const btnSalvarIngrediente = document.querySelector("#btnSalvarIngrediente");
+const cadastroIngrediente = document.querySelector("#cadastroIngrediente");
+const mensagemFormulario = document.querySelector("#mensagemFormulario");
+const previewImagem = document.querySelector("#previewImagem");
+const tituloFormulario = document.querySelector("#tituloFormulario");
+const btnSalvarReceita = document.querySelector("#btnSalvarReceita");
+
+const novoIngrediente = {
+  nome: document.querySelector("#novoIngredienteNome"),
+  calorias: document.querySelector("#novoIngredienteCalorias"),
+  proteinas: document.querySelector("#novoIngredienteProteinas"),
+  carboidratos: document.querySelector("#novoIngredienteCarboidratos"),
+  gorduras: document.querySelector("#novoIngredienteGorduras"),
+  unidade: document.querySelector("#novoIngredienteUnidade"),
+  peso: document.querySelector("#novoIngredientePeso"),
+};
+
+async function buscarJson(url, opcoes) {
+  const resposta = await fetch(url, opcoes);
+  const dados = await resposta.json();
+
+  if (!resposta.ok) {
+    throw new Error(dados.erro || "Falha ao processar");
+  }
+
+  return dados;
+}
+
+function mostrarMensagem(texto, tipo = "") {
+  mensagemFormulario.textContent = texto;
+  mensagemFormulario.dataset.tipo = tipo;
+}
+
+function preencherCategorias() {
+  categoriaSelect.innerHTML = '<option value="">Selecione</option>' + estadoCadastro.categorias.map((categoria) => {
+    return `<option value="${categoria.codigo}">${categoria.descricao}</option>`;
+  }).join("");
+}
+
+function preencherUnidades(select) {
+  select.innerHTML = '<option value="">Selecione</option>' + estadoCadastro.unidades.map((item) => {
+    return `<option value="${item.unidade}">${item.unidade}</option>`;
+  }).join("");
+}
+
+function preencherIngredientes() {
+  estadoCadastro.ingredientesPorNome = new Map(
+    estadoCadastro.ingredientes.map((ingrediente) => [normalizarNome(ingrediente.nome), ingrediente])
+  );
+  listaIngredientes.innerHTML = estadoCadastro.ingredientes.map((ingrediente) => {
+    return `<option value="${ingrediente.nome}"></option>`;
+  }).join("");
+}
+
+function normalizarNome(nome) {
+  return String(nome || "").trim().toUpperCase();
+}
+
+async function carregarIngredientes() {
+  estadoCadastro.ingredientes = await buscarJson("api/ingredientes");
+  preencherIngredientes();
+}
+
+function gramasPorMedida(quantidade, pesoMedida) {
+  const peso = Number(pesoMedida);
+  if (!Number.isFinite(peso) || peso <= 0) return 0;
+  return peso >= 1 ? quantidade : quantidade * peso * 1000;
+}
+
+function recalcularResumo() {
+  const resumo = {
+    volume: 0,
+    alcoolPuro: 0,
+  };
+
+  ingredientesEditor.querySelectorAll(".ingredient-row").forEach((linha) => {
+    const nome = normalizarNome(linha.querySelector('input[name="ingredienteNome"]').value);
+    const quantidade = Number(linha.querySelector('input[name="ingredienteQuantidade"]').value || 0);
+    const unidade = linha.querySelector('select[name="ingredienteUnidade"]');
+    const medidaPeso = Number(unidade.selectedOptions[0]?.dataset.peso || 0);
+    const ingrediente = estadoCadastro.ingredientesPorNome.get(nome);
+
+    if (!ingrediente || !quantidade || !medidaPeso) return;
+
+    const gramas = gramasPorMedida(quantidade, medidaPeso);
+    resumo.volume += gramas;
+    resumo.alcoolPuro += gramas * (Number(ingrediente.alcool || 0) / 100);
+  });
+
+  form.peso.value = Math.round(resumo.volume);
+  form.calorias.value = resumo.volume > 0 ? Math.round((resumo.alcoolPuro / resumo.volume) * 100) : 0;
+  form.proteinas.value = 0;
+  form.carboidratos.value = 0;
+  form.gorduras.value = 0;
+}
+
+async function carregarMedidas(linha) {
+  const nomeInput = linha.querySelector('input[name="ingredienteNome"]');
+  const unidadeSelect = linha.querySelector('select[name="ingredienteUnidade"]');
+  const nome = normalizarNome(nomeInput.value);
+
+  unidadeSelect.innerHTML = '<option value="">Selecione</option>';
+
+  if (!nome) {
+    recalcularResumo();
+    return;
+  }
+
+  if (!estadoCadastro.ingredientesPorNome.has(nome)) {
+    mostrarMensagem("Ingrediente ainda nao cadastrado. Use Novo ingrediente.", "erro");
+    recalcularResumo();
+    return;
+  }
+
+  const medidas = await buscarJson(`api/ingredientes/medidas?nome=${encodeURIComponent(nome)}`);
+  unidadeSelect.innerHTML = '<option value="">Selecione</option>' + medidas.map((medida) => {
+    return `<option value="${medida.unidade}" data-peso="${medida.peso}">${medida.unidade}</option>`;
+  }).join("");
+  if (medidas.length === 1) {
+    unidadeSelect.value = medidas[0].unidade;
+  }
+  mostrarMensagem("");
+  recalcularResumo();
+}
+
+function agendarCarregamentoMedidas(linha) {
+  const timerAnterior = estadoCadastro.timersMedidas.get(linha);
+  window.clearTimeout(timerAnterior);
+
+  const timer = window.setTimeout(() => {
+    const nome = normalizarNome(linha.querySelector('input[name="ingredienteNome"]').value);
+    if (estadoCadastro.ingredientesPorNome.has(nome)) {
+      carregarMedidas(linha).catch((err) => mostrarMensagem(err.message, "erro"));
+    }
+  }, 200);
+
+  estadoCadastro.timersMedidas.set(linha, timer);
+}
+
+function adicionarIngrediente(nomeInicial = "") {
+  const fragmento = templateIngrediente.content.cloneNode(true);
+  const linha = fragmento.querySelector(".ingredient-row");
+  const nome = fragmento.querySelector('input[name="ingredienteNome"]');
+  const quantidade = fragmento.querySelector('input[name="ingredienteQuantidade"]');
+  const unidade = fragmento.querySelector('select[name="ingredienteUnidade"]');
+  const remover = fragmento.querySelector(".icon-button");
+
+  nome.value = nomeInicial;
+  unidade.innerHTML = '<option value="">Selecione</option>';
+
+  nome.addEventListener("input", () => agendarCarregamentoMedidas(linha));
+  nome.addEventListener("change", () => carregarMedidas(linha).catch((err) => mostrarMensagem(err.message, "erro")));
+  quantidade.addEventListener("input", recalcularResumo);
+  unidade.addEventListener("change", recalcularResumo);
+  remover.addEventListener("click", () => {
+    if (ingredientesEditor.children.length > 1) {
+      linha.remove();
+      recalcularResumo();
+    }
+  });
+
+  ingredientesEditor.appendChild(fragmento);
+  return linha;
+}
+
+function obterLinhaVaziaOuCriar() {
+  const vazia = [...ingredientesEditor.querySelectorAll(".ingredient-row")].find((linha) => {
+    return !linha.querySelector('input[name="ingredienteNome"]').value.trim();
+  });
+
+  if (vazia) return vazia;
+
+  adicionarIngrediente();
+  return ingredientesEditor.lastElementChild;
+}
+
+function arquivoParaBase64(arquivo) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(",")[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(arquivo);
+  });
+}
+
+function obterIngredientes() {
+  return [...ingredientesEditor.querySelectorAll(".ingredient-row")].map((linha) => ({
+    nome: linha.querySelector('input[name="ingredienteNome"]').value.trim(),
+    quantidade: Number(linha.querySelector('input[name="ingredienteQuantidade"]').value || 0),
+    unidade: linha.querySelector('select[name="ingredienteUnidade"]').value,
+    tipo: "s",
+  })).filter((ingrediente) => ingrediente.nome);
+}
+
+async function montarPayload() {
+  const dados = new FormData(form);
+  const arquivo = dados.get("imagem");
+  let imagem = null;
+
+  if (arquivo && arquivo.size > 0) {
+    imagem = {
+      nome: arquivo.name,
+      mimeType: arquivo.type,
+      base64: await arquivoParaBase64(arquivo),
+    };
+  }
+
+  return {
+    nomeOriginal: estadoCadastro.nomeOriginal,
+    nome: dados.get("nome"),
+    categoriaCodigo: Number(dados.get("categoriaCodigo")),
+    pessoas: Number(dados.get("pessoas")),
+    instrucoes: dados.get("instrucoes"),
+    ingredientes: obterIngredientes(),
+    imagem,
+  };
+}
+
+async function preencherIngredienteReceita(ingrediente) {
+  const linha = adicionarIngrediente(ingrediente.nome || "");
+  linha.querySelector('input[name="ingredienteQuantidade"]').value = ingrediente.quantidade || 0;
+  await carregarMedidas(linha);
+  const unidadeSelect = linha.querySelector('select[name="ingredienteUnidade"]');
+  const unidade = ingrediente.unidade || "";
+
+  if (unidade && ![...unidadeSelect.options].some((option) => option.value === unidade)) {
+    unidadeSelect.appendChild(new Option(unidade, unidade));
+  }
+
+  unidadeSelect.value = unidade;
+  recalcularResumo();
+}
+
+async function carregarReceitaParaEdicao(nome) {
+  const receita = await buscarJson(`api/receitas/detalhe?nome=${encodeURIComponent(nome)}`);
+
+  estadoCadastro.modoEdicao = true;
+  estadoCadastro.nomeOriginal = receita.nome;
+
+  tituloFormulario.textContent = "Editar drink";
+  btnSalvarReceita.textContent = "Salvar alteracoes";
+  form.nome.value = receita.nome;
+  form.categoriaCodigo.value = receita.categoriaCodigo;
+  form.pessoas.value = receita.pessoas;
+  form.instrucoes.value = receita.instrucoes || "";
+  form.peso.value = receita.volume || receita.peso || 0;
+  form.calorias.value = receita.alcool || receita.calorias || 0;
+  form.proteinas.value = receita.proteinas || 0;
+  form.carboidratos.value = receita.carboidratos || 0;
+  form.gorduras.value = receita.gorduras || 0;
+
+  if (receita.temImagem) {
+    previewImagem.src = `api/receitas/imagem?nome=${encodeURIComponent(receita.nome)}&v=${Date.now()}`;
+  }
+
+  ingredientesEditor.innerHTML = "";
+  for (const ingrediente of receita.ingredientes || []) {
+    await preencherIngredienteReceita(ingrediente);
+  }
+
+  if (ingredientesEditor.children.length === 0) {
+    adicionarIngrediente();
+  }
+
+  mostrarMensagem("");
+}
+
+function limparCadastroIngrediente() {
+  novoIngrediente.nome.value = "";
+  novoIngrediente.calorias.value = 0;
+  novoIngrediente.proteinas.value = 0;
+  novoIngrediente.carboidratos.value = 0;
+  novoIngrediente.gorduras.value = 0;
+  novoIngrediente.unidade.value = "grama(s)";
+  novoIngrediente.peso.value = 100;
+}
+
+async function salvarIngrediente() {
+  mostrarMensagem("Salvando ingrediente...");
+
+  const payload = {
+    nome: novoIngrediente.nome.value,
+    tipo: "s",
+    alcool: Number(novoIngrediente.calorias.value || 0),
+    calorias: Number(novoIngrediente.calorias.value || 0),
+    proteinas: Number(novoIngrediente.proteinas.value || 0),
+    carboidratos: Number(novoIngrediente.carboidratos.value || 0),
+    gorduras: Number(novoIngrediente.gorduras.value || 0),
+    medidas: [{
+      unidade: novoIngrediente.unidade.value,
+      peso: Number(novoIngrediente.peso.value || 0),
+    }],
+  };
+
+  const resultado = await buscarJson("api/ingredientes", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  await carregarIngredientes();
+  cadastroIngrediente.hidden = true;
+  const linha = obterLinhaVaziaOuCriar();
+  linha.querySelector('input[name="ingredienteNome"]').value = resultado.nome;
+  await carregarMedidas(linha);
+  limparCadastroIngrediente();
+  mostrarMensagem("Ingrediente cadastrado e adicionado ao drink.", "sucesso");
+}
+
+form.imagem.addEventListener("change", () => {
+  const arquivo = form.imagem.files[0];
+  previewImagem.removeAttribute("src");
+
+  if (!arquivo) return;
+
+  previewImagem.src = URL.createObjectURL(arquivo);
+});
+
+btnAdicionarIngrediente.addEventListener("click", () => adicionarIngrediente());
+btnNovoIngrediente.addEventListener("click", () => {
+  cadastroIngrediente.hidden = false;
+  novoIngrediente.nome.focus();
+});
+btnFecharIngrediente.addEventListener("click", () => {
+  cadastroIngrediente.hidden = true;
+});
+btnSalvarIngrediente.addEventListener("click", () => {
+  salvarIngrediente().catch((err) => mostrarMensagem(err.message, "erro"));
+});
+
+form.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  mostrarMensagem(estadoCadastro.modoEdicao ? "Salvando alteracoes..." : "Salvando drink...");
+
+  try {
+    const payload = await montarPayload();
+    const resultado = await buscarJson("api/receitas", {
+      method: estadoCadastro.modoEdicao ? "PUT" : "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    mostrarMensagem(estadoCadastro.modoEdicao ? "Drink atualizado com sucesso." : "Drink salvo com sucesso.", "sucesso");
+    window.setTimeout(() => {
+      window.location.href = `./?busca=${encodeURIComponent(resultado.nome)}`;
+    }, 800);
+  } catch (err) {
+    mostrarMensagem(err.message, "erro");
+  }
+});
+
+async function iniciarCadastro() {
+  try {
+    const [categorias, unidades] = await Promise.all([
+      buscarJson("api/categorias"),
+      buscarJson("api/unidades"),
+      carregarIngredientes(),
+    ]);
+
+    estadoCadastro.categorias = categorias;
+    estadoCadastro.unidades = unidades;
+    preencherCategorias();
+    preencherUnidades(novoIngrediente.unidade);
+    limparCadastroIngrediente();
+
+    const editar = new URLSearchParams(window.location.search).get("editar");
+    if (editar) {
+      await carregarReceitaParaEdicao(editar);
+    } else {
+      adicionarIngrediente();
+    }
+  } catch (err) {
+    mostrarMensagem(err.message, "erro");
+  }
+}
+
+iniciarCadastro();
