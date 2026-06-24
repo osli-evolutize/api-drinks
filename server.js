@@ -1697,6 +1697,85 @@ function normalizarTermoBusca(texto) {
     .trim();
 }
 
+const PALAVRAS_IGNORADAS_BUSCA = new Set([
+  "a",
+  "ao",
+  "aos",
+  "as",
+  "bebida",
+  "cocktail",
+  "coquetel",
+  "com",
+  "como",
+  "da",
+  "das",
+  "de",
+  "do",
+  "dos",
+  "drink",
+  "drinks",
+  "e",
+  "em",
+  "o",
+  "os",
+  "para",
+  "receita",
+  "receitas",
+]);
+
+const PALAVRAS_CONTEXTO_DRINK = [
+  "bebida",
+  "cocktail",
+  "cocktails",
+  "coquetel",
+  "coqueteis",
+  "drink",
+  "drinks",
+  "receita",
+  "receitas",
+];
+
+function reduzirPalavraBusca(palavra) {
+  if (palavra.length > 4 && palavra.endsWith("oes")) return `${palavra.slice(0, -3)}ao`;
+  if (palavra.length > 4 && palavra.endsWith("es")) return palavra.slice(0, -2);
+  if (palavra.length > 3 && palavra.endsWith("s")) return palavra.slice(0, -1);
+  return palavra;
+}
+
+function palavrasSignificativasBusca(texto) {
+  return normalizarTermoBusca(texto)
+    .split(/[^a-z0-9]+/i)
+    .map(reduzirPalavraBusca)
+    .filter((palavra) => palavra.length >= 3 && !PALAVRAS_IGNORADAS_BUSCA.has(palavra));
+}
+
+function textoCombinaComBusca(texto, busca) {
+  const palavras = [...new Set(palavrasSignificativasBusca(busca))];
+  if (palavras.length === 0) return true;
+
+  const textoNormalizado = normalizarTermoBusca(texto);
+  const encontradas = palavras.filter((palavra) => textoNormalizado.includes(palavra));
+  const minimo = palavras.length <= 2 ? palavras.length : 2;
+  if (encontradas.length < minimo) return false;
+
+  return PALAVRAS_CONTEXTO_DRINK.some((palavra) => textoNormalizado.includes(palavra));
+}
+
+function imagemCombinaComBusca(imagem, busca) {
+  return textoCombinaComBusca(`${imagem.titulo || ""} ${imagem.fonte || ""} ${imagem.url || ""}`, busca);
+}
+
+function paginaCombinaComBusca(html, urlOrigem, busca) {
+  const titulo = limparTextoWeb(
+    html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i)?.[1]
+    || html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]
+    || html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1]
+    || ""
+  );
+
+  return textoCombinaComBusca(`${titulo} ${urlOrigem}`, busca);
+}
+
 function montarConsultasImagemReceita(receita) {
   const nome = String(receita || "").trim();
   const normalizado = normalizarTermoBusca(nome);
@@ -1704,6 +1783,7 @@ function montarConsultasImagemReceita(receita) {
     `${nome} drink`,
     `"${nome}" coquetel`,
     `${normalizado} cocktail`,
+    `${normalizado} receita drink`,
   ];
 
   if (normalizado.includes("batata suica")) {
@@ -1713,11 +1793,6 @@ function montarConsultasImagemReceita(receita) {
       normalizado.replace("batata suica", "batata rosti receita"),
       normalizado.replace("batata suica", "batata rostie receita")
     );
-  }
-
-  const baseSemComplemento = nome.replace(/\s+com\s+.+$/i, "").trim();
-  if (baseSemComplemento && baseSemComplemento.toLowerCase() !== nome.toLowerCase()) {
-    consultas.push(`${baseSemComplemento} drink`);
   }
 
   return [...new Set(consultas)];
@@ -1745,6 +1820,48 @@ async function pesquisarLinksWeb(consulta) {
   return links;
 }
 
+async function pesquisarImagensCocktailDb(termo) {
+  const imagens = [];
+  const normalizado = String(termo || "").trim();
+  if (!normalizado) return imagens;
+
+  const urls = [
+    `https://www.thecocktaildb.com/api/json/v1/1/search.php?s=${encodeURIComponent(normalizado)}`,
+    `https://www.thecocktaildb.com/api/json/v1/1/filter.php?i=${encodeURIComponent(normalizado)}`,
+  ];
+
+  for (const urlApi of urls) {
+    try {
+      const resposta = await fetch(urlApi, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (compatible; DrinksBot/1.0)",
+          Accept: "application/json",
+        },
+      });
+
+      if (!resposta.ok) continue;
+
+      const dados = await resposta.json();
+      const drinks = Array.isArray(dados.drinks) ? dados.drinks : [];
+
+      for (const drink of drinks) {
+        adicionarImagemUnica(imagens, {
+          url: drink.strDrinkThumb,
+          titulo: drink.strDrink,
+          fonte: `https://www.thecocktaildb.com/drink/${drink.idDrink}`,
+        });
+        if (imagens.length >= 18) break;
+      }
+    } catch {
+      // Tenta a proxima consulta.
+    }
+
+    if (imagens.length >= 18) break;
+  }
+
+  return imagens;
+}
+
 async function pesquisarImagensReceita(res, url) {
   const receita = (url.searchParams.get("receita") || "").trim();
 
@@ -1756,9 +1873,14 @@ async function pesquisarImagensReceita(res, url) {
   const imagens = [];
   const consultas = montarConsultasImagemReceita(receita);
 
+  for (const imagem of await pesquisarImagensCocktailDb(receita)) {
+    adicionarImagemUnica(imagens, imagem);
+  }
+
   for (const consulta of consultas.slice(0, 4)) {
     try {
       for (const imagem of await pesquisarImagensDuckDuckGo(consulta)) {
+        if (!imagemCombinaComBusca(imagem, receita)) continue;
         adicionarImagemUnica(imagens, imagem);
       }
     } catch {
@@ -1774,7 +1896,9 @@ async function pesquisarImagensReceita(res, url) {
     for (const link of links.slice(0, 12)) {
       try {
         const html = await baixarTexto(link);
+        if (!paginaCombinaComBusca(html, link, receita)) continue;
         for (const imagem of extrairImagensPaginaReceita(html, link)) {
+          if (!imagemCombinaComBusca(imagem, receita)) continue;
           adicionarImagemUnica(imagens, imagem);
         }
       } catch {
@@ -1790,9 +1914,10 @@ async function pesquisarImagensReceita(res, url) {
   if (imagens.length < 24) {
     for (const consulta of consultas.slice(0, 3)) {
       try {
-        const consultaImagem = `${consulta} prato pronto`;
+        const consultaImagem = `${consulta} pronto`;
         const htmlBusca = await baixarTexto(`https://www.bing.com/images/search?safeSearch=Strict&q=${encodeURIComponent(consultaImagem)}`, 4 * 1024 * 1024);
         for (const imagem of extrairUrlsImagensBing(htmlBusca)) {
+          if (!imagemCombinaComBusca(imagem, receita)) continue;
           adicionarImagemUnica(imagens, imagem);
         }
       } catch {
@@ -1803,10 +1928,20 @@ async function pesquisarImagensReceita(res, url) {
     }
   }
 
-  enviarJson(res, 200, imagens.slice(0, 30));
+  const imagensValidas = [];
+  for (const imagem of imagens) {
+    const urlValidacao = imagem.thumbnailUrl || imagem.url;
+    if (await imagemRemotaValida(urlValidacao)) {
+      imagensValidas.push(imagem);
+    }
+
+    if (imagensValidas.length >= 30) break;
+  }
+
+  enviarJson(res, 200, imagensValidas);
 }
 
-async function baixarImagemUnicaParaBanco(urlImagem) {
+async function baixarImagemRemota(urlImagem, limiteBytes = 8 * 1024 * 1024) {
   const resposta = await fetch(urlImagem, {
     headers: {
       "User-Agent": "Mozilla/5.0 (compatible; DrinksBot/1.0)",
@@ -1823,7 +1958,7 @@ async function baixarImagemUnicaParaBanco(urlImagem) {
     throw new Error("Imagem selecionada invalida");
   }
 
-  if (bytes.length > 8 * 1024 * 1024) {
+  if (bytes.length > limiteBytes) {
     throw new Error("A imagem deve ter no maximo 8 MB");
   }
 
@@ -1832,6 +1967,40 @@ async function baixarImagemUnicaParaBanco(urlImagem) {
     throw new Error("Selecione uma imagem JPG, PNG ou WEBP");
   }
 
+  return { bytes, mimeType };
+}
+
+async function imagemRemotaValida(urlImagem) {
+  try {
+    await baixarImagemRemota(urlImagem, 4 * 1024 * 1024);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function proxyImagemInternet(res, url) {
+  const urlImagem = (url.searchParams.get("url") || "").trim();
+
+  if (!urlImagem) {
+    enviarJson(res, 400, { erro: "Informe a URL da imagem" });
+    return;
+  }
+
+  try {
+    const { bytes, mimeType } = await baixarImagemRemota(urlImagem, 4 * 1024 * 1024);
+    res.writeHead(200, {
+      "Content-Type": mimeType,
+      "Cache-Control": "public, max-age=86400",
+    });
+    res.end(bytes);
+  } catch {
+    enviarJson(res, 404, { erro: "Imagem indisponivel" });
+  }
+}
+
+async function baixarImagemUnicaParaBanco(urlImagem) {
+  const { bytes } = await baixarImagemRemota(urlImagem);
   return bytes;
 }
 
@@ -2055,6 +2224,12 @@ async function tratarApi(req, res, url) {
     if (req.method === "GET" && url.pathname === "/api/internet/imagens") {
       if (!exigirAutenticacao(req, res)) return;
       await pesquisarImagensReceita(res, url);
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/internet/imagem-proxy") {
+      if (!exigirAutenticacao(req, res)) return;
+      await proxyImagemInternet(res, url);
       return;
     }
 
